@@ -44,7 +44,6 @@ public class ReflectUtil {
         } catch (Exception e) {
             //ignored.
         }
-
         return null;
     }
 
@@ -72,7 +71,6 @@ public class ReflectUtil {
                 parameterTypes[i] = args[i].getClass();
             }
         }
-
         Method method = clazz.getDeclaredMethod(name, parameterTypes);
         method.setAccessible(true);
         return method.invoke(target, args);
@@ -92,7 +90,6 @@ public class ReflectUtil {
             return invoke(clazz, target, name, parameterTypes, args);
         } catch (Exception e) {
         }
-
         return null;
     }
 
@@ -104,6 +101,13 @@ public class ReflectUtil {
         return constructor.newInstance(args);
     }
 
+    /**
+     * 感觉Hook ﻿currentActivityThread方法更好
+     * <p>
+     * {@link # https://android.googlesource.com/platform/frameworks/base/+/android-5.0.0_r7/core/java/android/app/ActivityThread.java}
+     * <p>
+     * {@link # https://android.googlesource.com/platform/frameworks/base/+/android-2.3.7_r1/core/java/android/app/ActivityThread.java}
+     */
     @UiThread
     public static Object getActivityThread(Context base) {
         if (sActivityThread == null) {
@@ -123,10 +127,15 @@ public class ReflectUtil {
                 e.printStackTrace();
             }
         }
-
         return sActivityThread;
     }
 
+    /**
+     * 获取原始的{@link Instrumentation}
+     *
+     * @param base
+     * @return
+     */
     public static Instrumentation getInstrumentation(Context base) {
         if (getActivityThread(base) != null) {
             try {
@@ -136,10 +145,15 @@ public class ReflectUtil {
                 e.printStackTrace();
             }
         }
-
         return sInstrumentation;
     }
 
+    /**
+     * Hook instrumentation
+     *
+     * @param activityThread  activityThread
+     * @param instrumentation activityThread里面的instrumentation
+     */
     public static void setInstrumentation(Object activityThread, Instrumentation instrumentation) {
         try {
             ReflectUtil.setField(activityThread.getClass(), activityThread, "mInstrumentation", instrumentation);
@@ -148,6 +162,9 @@ public class ReflectUtil {
         }
     }
 
+    /**
+     * {@link Context#mPackageInfo}然后是一个{@link android.app.LoadedApk}
+     */
     public static Object getPackageInfo(Context base) {
         if (sLoadedApk == null) {
             try {
@@ -156,18 +173,22 @@ public class ReflectUtil {
                 e.printStackTrace();
             }
         }
-
         return sLoadedApk;
     }
 
+    /**
+     * {@link android.app.ActivityThread#mH}对象
+     *
+     * @param base     context
+     * @param callback 要设置的自定义的callback
+     */
     public static void setHandlerCallback(Context base, Handler.Callback callback) {
         try {
             Object activityThread = getActivityThread(base);
-            Handler mainHandler = (Handler) ReflectUtil.invoke(activityThread.getClass(), activityThread, "getHandler", (Object[])null);
+            Handler mainHandler = (Handler) ReflectUtil.invoke(activityThread.getClass(), activityThread, "getHandler", (Object[]) null);
             ReflectUtil.setField(Handler.class, mainHandler, "mCallback", callback);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
-
 }

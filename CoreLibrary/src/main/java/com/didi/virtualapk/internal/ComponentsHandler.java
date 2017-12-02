@@ -34,7 +34,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Created by renyugang on 17/6/7.
  */
-
 public class ComponentsHandler {
 
     public static final String TAG = "PluginManager";
@@ -42,7 +41,6 @@ public class ComponentsHandler {
     private Context mContext;
     private PluginManager mPluginManager;
     private StubActivityInfo mStubActivityInfo = new StubActivityInfo();
-
 
     private ArrayMap<ComponentName, Service> mServices = new ArrayMap<ComponentName, Service>();
     private ArrayMap<IBinder, Intent> mBoundServices = new ArrayMap<IBinder, Intent>();
@@ -54,30 +52,34 @@ public class ComponentsHandler {
     }
 
     /**
-     * transform intent from implicit to explicit
+     * transform intent from implicit to explicit,隐式Intent变成显示的
      */
     public Intent transformIntentToExplicitAsNeeded(Intent intent) {
         ComponentName component = intent.getComponent();
-        if (component == null
-            || component.getPackageName().equals(mContext.getPackageName())) {
+        // component为null或者就是宿主
+        if (component == null || component.getPackageName().equals(mContext.getPackageName())) {
             ResolveInfo info = mPluginManager.resolveActivity(intent);
             if (info != null && info.activityInfo != null) {
                 component = new ComponentName(info.activityInfo.packageName, info.activityInfo.name);
                 intent.setComponent(component);
             }
         }
-
         return intent;
     }
 
+    /**
+     * 解析Intent
+     *
+     * @param intent intent
+     */
     public void markIntentIfNeeded(Intent intent) {
         if (intent.getComponent() == null) {
             return;
         }
-
         String targetPackageName = intent.getComponent().getPackageName();
         String targetClassName = intent.getComponent().getClassName();
         // search map and return specific launchmode stub activity
+        // 包名不是宿主的，并且能在插件列表找到对应包名的插件就打上是插件Activity的标记
         if (!targetPackageName.equals(mContext.getPackageName()) && mPluginManager.getLoadedPlugin(targetPackageName) != null) {
             intent.putExtra(Constants.KEY_IS_PLUGIN, true);
             intent.putExtra(Constants.KEY_TARGET_PACKAGE, targetPackageName);
@@ -86,8 +88,16 @@ public class ComponentsHandler {
         }
     }
 
+    /**
+     * 分发到对应的 sub Activity 上去
+     *
+     * @param intent intent
+     */
     private void dispatchStubActivity(Intent intent) {
         ComponentName component = intent.getComponent();
+        if (component == null) {
+            return;
+        }
         String targetClassName = intent.getComponent().getClassName();
         LoadedPlugin loadedPlugin = mPluginManager.getLoadedPlugin(intent);
         ActivityInfo info = loadedPlugin.getActivityInfo(component);
@@ -101,7 +111,6 @@ public class ComponentsHandler {
         Log.i(TAG, String.format("dispatchStubActivity,[%s -> %s]", targetClassName, stubActivity));
         intent.setClassName(mContext, stubActivity);
     }
-
 
     public AtomicInteger getServiceCounter(Service service) {
         return this.mServiceCounters.get(service);

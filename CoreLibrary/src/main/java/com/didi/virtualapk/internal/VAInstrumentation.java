@@ -35,17 +35,15 @@ import com.didi.virtualapk.PluginManager;
 import com.didi.virtualapk.utils.PluginUtil;
 import com.didi.virtualapk.utils.ReflectUtil;
 
-
 /**
  * Created by renyugang on 16/8/10.
  */
 public class VAInstrumentation extends Instrumentation implements Handler.Callback {
     public static final String TAG = "VAInstrumentation";
-    public static final int LAUNCH_ACTIVITY         = 100;
+    public static final int LAUNCH_ACTIVITY = 100;
 
     private Instrumentation mBase;
-
-    PluginManager mPluginManager;
+    private PluginManager mPluginManager;
 
     public VAInstrumentation(PluginManager pluginManager, Instrumentation base) {
         this.mPluginManager = pluginManager;
@@ -55,20 +53,18 @@ public class VAInstrumentation extends Instrumentation implements Handler.Callba
     public ActivityResult execStartActivity(
             Context who, IBinder contextThread, IBinder token, Activity target,
             Intent intent, int requestCode, Bundle options) {
+        // 如果是隐式启动尝试做一些处理
         mPluginManager.getComponentsHandler().transformIntentToExplicitAsNeeded(intent);
-        // null component is an implicitly intent
+        // null component is an implicitly intent,隐式 Intent
         if (intent.getComponent() != null) {
             Log.i(TAG, String.format("execStartActivity[%s : %s]", intent.getComponent().getPackageName(),
                     intent.getComponent().getClassName()));
             // resolve intent with Stub Activity if needed
             this.mPluginManager.getComponentsHandler().markIntentIfNeeded(intent);
         }
-
         ActivityResult result = realExecStartActivity(who, contextThread, token, target,
-                    intent, requestCode, options);
-
+                intent, requestCode, options);
         return result;
-
     }
 
     private ActivityResult realExecStartActivity(
@@ -76,9 +72,9 @@ public class VAInstrumentation extends Instrumentation implements Handler.Callba
             Intent intent, int requestCode, Bundle options) {
         ActivityResult result = null;
         try {
-            Class[] parameterTypes = {Context.class, IBinder.class, IBinder.class, Activity.class, Intent.class,
-            int.class, Bundle.class};
-            result = (ActivityResult)ReflectUtil.invoke(Instrumentation.class, mBase,
+            Class[] parameterTypes = {Context.class, IBinder.class, IBinder.class,
+                    Activity.class, Intent.class, int.class, Bundle.class};
+            result = (ActivityResult) ReflectUtil.invoke(Instrumentation.class, mBase,
                     "execStartActivity", parameterTypes,
                     who, contextThread, token, target, intent, requestCode, options);
         } catch (Exception e) {
@@ -87,7 +83,6 @@ public class VAInstrumentation extends Instrumentation implements Handler.Callba
             }
             e.printStackTrace();
         }
-
         return result;
     }
 
@@ -115,7 +110,6 @@ public class VAInstrumentation extends Instrumentation implements Handler.Callba
                 return activity;
             }
         }
-
         return mBase.newActivity(cl, className, intent);
     }
 
@@ -139,9 +133,7 @@ public class VAInstrumentation extends Instrumentation implements Handler.Callba
             } catch (Exception e) {
                 e.printStackTrace();
             }
-
         }
-
         mBase.callActivityOnCreate(activity, icicle);
     }
 
@@ -166,7 +158,6 @@ public class VAInstrumentation extends Instrumentation implements Handler.Callba
                 e.printStackTrace();
             }
         }
-
         return false;
     }
 

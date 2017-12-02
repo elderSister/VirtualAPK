@@ -1,3 +1,5 @@
 include ':app'
 include ':CoreLibrary'
 include ':AndroidStub'
+include ':virtualapk-gradle-plugin'
+include ':PluginDemo:app'
