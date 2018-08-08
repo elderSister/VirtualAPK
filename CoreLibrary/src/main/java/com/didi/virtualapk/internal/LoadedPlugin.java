@@ -78,15 +78,33 @@ public final class LoadedPlugin {
 
     public static final String TAG = "LoadedPlugin";
 
+    /**
+     * 根据插件文件创建插件对象
+     *
+     * @param pluginManager PluginManager类
+     * @param host          host的Context
+     * @param apk           插件文件
+     * @return 插件对象
+     * @throws Exception 插件加载异常
+     */
     public static LoadedPlugin create(PluginManager pluginManager, Context host, File apk) throws Exception {
         return new LoadedPlugin(pluginManager, host, apk);
     }
 
+    /**
+     * 创建插件ClassLoader
+     *
+     * @param context host的classLoader
+     * @param apk     插件文件位置
+     * @param libsDir native lib的文件夹，按照他的写法和files，cache同级的app_valibs目录
+     * @param parent  host的ClassLoader
+     * @return 插件ClassLoader
+     */
     private static ClassLoader createClassLoader(Context context, File apk, File libsDir, ClassLoader parent) {
+        // data/data/name/app_dex
         File dexOutputDir = context.getDir(Constants.OPTIMIZE_DIR, Context.MODE_PRIVATE);
         String dexOutputPath = dexOutputDir.getAbsolutePath();
         DexClassLoader loader = new DexClassLoader(apk.getAbsolutePath(), dexOutputPath, libsDir.getAbsolutePath(), parent);
-
         if (Constants.COMBINE_CLASSLOADER) {
             try {
                 DexUtil.insertDex(loader);
@@ -94,10 +112,16 @@ public final class LoadedPlugin {
                 e.printStackTrace();
             }
         }
-
         return loader;
     }
 
+    /**
+     * 创建插件的AssetManager
+     *
+     * @param context 宿主context
+     * @param apk     插件apk文件
+     * @return 插件AssetManager
+     */
     private static AssetManager createAssetManager(Context context, File apk) {
         try {
             AssetManager am = AssetManager.class.newInstance();
@@ -109,6 +133,13 @@ public final class LoadedPlugin {
         }
     }
 
+    /**
+     * 创建插件的资源管理器
+     *
+     * @param context 宿主host
+     * @param apk     插件apk文件
+     * @return 插件Resources
+     */
     @WorkerThread
     private static Resources createResources(Context context, File apk) {
         if (Constants.COMBINE_RESOURCES) {
@@ -126,22 +157,56 @@ public final class LoadedPlugin {
         return query.get(0);
     }
 
+    /**
+     * 插件apk包的位置
+     */
     private final String mLocation;
+
+    /**
+     * PluginManager对象
+     */
     private PluginManager mPluginManager;
+    /**
+     * host的Context
+     */
     private Context mHostContext;
+    /**
+     * plugin的Context
+     */
     private Context mPluginContext;
+    /**
+     * native lib的文件夹，按照他的写法和files，cache同级的app_valibs目录
+     */
     private final File mNativeLibDir;
+    /**
+     * 解析的apk的一些信息
+     */
     private final PackageParser.Package mPackage;
+    /**
+     * PackageInfo，插件包的一些信息
+     */
     private final PackageInfo mPackageInfo;
+    /**
+     * 插件Resource对象
+     */
     private Resources mResources;
+    /**
+     * 插件ClassLoader对象
+     */
     private ClassLoader mClassLoader;
+    /**
+     * 插件apk的一些工具类
+     */
     private PluginPackageManager mPackageManager;
 
     private Map<ComponentName, ActivityInfo> mActivityInfos;
     private Map<ComponentName, ServiceInfo> mServiceInfos;
     private Map<ComponentName, ActivityInfo> mReceiverInfos;
     private Map<ComponentName, ProviderInfo> mProviderInfos;
-    private Map<String, ProviderInfo> mProviders; // key is authorities of provider
+    /**
+     * key is authorities of provider
+     */
+    private Map<String, ProviderInfo> mProviders;
     private Map<ComponentName, InstrumentationInfo> mInstrumentationInfos;
 
     private Application mApplication;
@@ -155,9 +220,9 @@ public final class LoadedPlugin {
         this.mPackageInfo = new PackageInfo();
         this.mPackageInfo.applicationInfo = this.mPackage.applicationInfo;
         this.mPackageInfo.applicationInfo.sourceDir = apk.getAbsolutePath();
-    
+
         if (Build.VERSION.SDK_INT >= 28
-            || (Build.VERSION.SDK_INT == 27 && Build.VERSION.PREVIEW_SDK_INT != 0)) { // Android P Preview
+                || (Build.VERSION.SDK_INT == 27 && Build.VERSION.PREVIEW_SDK_INT != 0)) { // Android P Preview
             try {
                 this.mPackageInfo.signatures = this.mPackage.mSigningDetails.signatures;
             } catch (Throwable e) {
@@ -221,7 +286,7 @@ public final class LoadedPlugin {
         Map<ComponentName, ActivityInfo> receivers = new HashMap<ComponentName, ActivityInfo>();
         for (PackageParser.Activity receiver : this.mPackage.receivers) {
             receivers.put(receiver.getComponentName(), receiver.info);
-    
+
             BroadcastReceiver br = BroadcastReceiver.class.cast(getClassLoader().loadClass(receiver.getComponentName().getClassName()).newInstance());
             for (PackageParser.ActivityIntentInfo aii : receiver.intents) {
                 this.mHostContext.registerReceiver(br, aii);
@@ -517,27 +582,23 @@ public final class LoadedPlugin {
 
         @Override
         public PackageInfo getPackageInfo(String packageName, int flags) throws NameNotFoundException {
-
             LoadedPlugin plugin = mPluginManager.getLoadedPlugin(packageName);
             if (null != plugin) {
                 return plugin.mPackageInfo;
             }
-
             return this.mHostPackageManager.getPackageInfo(packageName, flags);
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public PackageInfo getPackageInfo(VersionedPackage versionedPackage, int i) throws NameNotFoundException {
-
             LoadedPlugin plugin = mPluginManager.getLoadedPlugin(versionedPackage.getPackageName());
             if (null != plugin) {
                 return plugin.mPackageInfo;
             }
-
             return this.mHostPackageManager.getPackageInfo(versionedPackage, i);
         }
-    
+
         @Override
         public String[] currentToCanonicalPackageNames(String[] names) {
             return this.mHostPackageManager.currentToCanonicalPackageNames(names);
@@ -554,7 +615,6 @@ public final class LoadedPlugin {
             if (null != plugin) {
                 return plugin.getLaunchIntent();
             }
-
             return this.mHostPackageManager.getLaunchIntentForPackage(packageName);
         }
 
@@ -565,7 +625,6 @@ public final class LoadedPlugin {
             if (null != plugin) {
                 return plugin.getLeanbackLaunchIntent();
             }
-
             return this.mHostPackageManager.getLeanbackLaunchIntentForPackage(packageName);
         }
 
@@ -600,7 +659,6 @@ public final class LoadedPlugin {
             if (null != plugin) {
                 return plugin.getApplicationInfo();
             }
-
             return this.mHostPackageManager.getApplicationInfo(packageName, flags);
         }
 
@@ -610,7 +668,6 @@ public final class LoadedPlugin {
             if (null != plugin) {
                 return plugin.mActivityInfos.get(component);
             }
-
             return this.mHostPackageManager.getActivityInfo(component, flags);
         }
 
@@ -620,7 +677,6 @@ public final class LoadedPlugin {
             if (null != plugin) {
                 return plugin.mReceiverInfos.get(component);
             }
-
             return this.mHostPackageManager.getReceiverInfo(component, flags);
         }
 
@@ -630,7 +686,6 @@ public final class LoadedPlugin {
             if (null != plugin) {
                 return plugin.mServiceInfos.get(component);
             }
-
             return this.mHostPackageManager.getServiceInfo(component, flags);
         }
 
@@ -640,7 +695,6 @@ public final class LoadedPlugin {
             if (null != plugin) {
                 return plugin.mProviderInfos.get(component);
             }
-
             return this.mHostPackageManager.getProviderInfo(component, flags);
         }
 
@@ -699,63 +753,63 @@ public final class LoadedPlugin {
         public List<ApplicationInfo> getInstalledApplications(int flags) {
             return this.mHostPackageManager.getInstalledApplications(flags);
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public boolean isInstantApp() {
             return this.mHostPackageManager.isInstantApp();
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public boolean isInstantApp(String s) {
             return this.mHostPackageManager.isInstantApp(s);
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public int getInstantAppCookieMaxBytes() {
             return this.mHostPackageManager.getInstantAppCookieMaxBytes();
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @NonNull
         @Override
         public byte[] getInstantAppCookie() {
             return this.mHostPackageManager.getInstantAppCookie();
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public void clearInstantAppCookie() {
             this.mHostPackageManager.clearInstantAppCookie();
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public void updateInstantAppCookie(@Nullable byte[] bytes) {
             this.mHostPackageManager.updateInstantAppCookie(bytes);
         }
-    
+
         @Override
         public String[] getSystemSharedLibraryNames() {
             return this.mHostPackageManager.getSystemSharedLibraryNames();
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @NonNull
         @Override
         public List<SharedLibraryInfo> getSharedLibraries(int i) {
             return this.mHostPackageManager.getSharedLibraries(i);
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Nullable
         @Override
         public ChangedPackages getChangedPackages(int i) {
             return this.mHostPackageManager.getChangedPackages(i);
         }
-    
+
         @Override
         public FeatureInfo[] getSystemAvailableFeatures() {
             return this.mHostPackageManager.getSystemAvailableFeatures();
@@ -1257,25 +1311,25 @@ public final class LoadedPlugin {
         public boolean isSafeMode() {
             return this.mHostPackageManager.isSafeMode();
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public void setApplicationCategoryHint(@NonNull String s, int i) {
             this.mHostPackageManager.setApplicationCategoryHint(s, i);
         }
-    
+
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
         @Override
         public PackageInstaller getPackageInstaller() {
             return this.mHostPackageManager.getPackageInstaller();
         }
-    
+
         @TargetApi(Build.VERSION_CODES.O)
         @Override
         public boolean canRequestPackageInstalls() {
             return this.mHostPackageManager.canRequestPackageInstalls();
         }
-    
+
         @TargetApi(24)
         public int[] getPackageGids(String s, int i) throws NameNotFoundException {
             return mHostPackageManager.getPackageGids(s);

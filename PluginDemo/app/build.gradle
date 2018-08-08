@@ -2,7 +2,6 @@ apply plugin: 'com.android.application'
 
 android {
     compileSdkVersion 23
-    buildToolsVersion "25.0.2"
 
     defaultConfig {
         applicationId "com.didi.virtualapk.demo"
@@ -58,6 +57,7 @@ apply plugin: 'com.didi.virtualapk.plugin'
 
 virtualApk {
     packageId = 0x6f // the package id of Resources.
-    targetHost = '../../VirtualAPK/app' // the path of application module in host project.
+    targetHost = '/Users/qingyong/Dev/Projects/Practice/VirtualAPK/app'
+    // the path of application module in host project.
     applyHostMapping = true //optional, default value: true.
 }

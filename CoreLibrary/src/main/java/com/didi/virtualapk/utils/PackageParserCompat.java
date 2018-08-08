@@ -27,7 +27,17 @@ import java.io.File;
  */
 public final class PackageParserCompat {
 
-    public static final PackageParser.Package parsePackage(final Context context, final File apk, final int flags) throws PackageParser.PackageParserException {
+    /**
+     * 解析插件apk
+     *
+     * @param context context
+     * @param apk     插件apk位置，必须是apk文件
+     * @param flags   flag
+     * @return {@link PackageParser.Package}
+     * @throws PackageParser.PackageParserException
+     */
+    public static final PackageParser.Package parsePackage(final Context context, final File apk, final int flags)
+            throws PackageParser.PackageParserException {
         if (Build.VERSION.SDK_INT >= 24) {
             if (Build.VERSION.PREVIEW_SDK_INT == 0) {
                 return PackageParserV24.parsePackage(context, apk, flags);
@@ -52,9 +62,12 @@ public final class PackageParserCompat {
         }
     }
 
+    /**
+     * 7.0及以后的兼容处理
+     */
     private static final class PackageParserV24 {
-
-        static final PackageParser.Package parsePackage(Context context, File apk, int flags) throws PackageParser.PackageParserException {
+        static final PackageParser.Package parsePackage(Context context, File apk, int flags)
+                throws PackageParser.PackageParserException {
             PackageParser parser = new PackageParser();
             PackageParser.Package pkg = parser.parsePackage(apk, flags);
             ReflectUtil.invokeNoException(PackageParser.class, null, "collectCertificates",
@@ -63,9 +76,12 @@ public final class PackageParserCompat {
         }
     }
 
+    /**
+     * 5.0,5.1,6.0的处理
+     */
     private static final class PackageParserLollipop {
-
-        static final PackageParser.Package parsePackage(final Context context, final File apk, final int flags) throws PackageParser.PackageParserException {
+        static final PackageParser.Package parsePackage(final Context context, final File apk, final int flags)
+                throws PackageParser.PackageParserException {
             PackageParser parser = new PackageParser();
             PackageParser.Package pkg = parser.parsePackage(apk, flags);
             try {
@@ -75,19 +91,20 @@ public final class PackageParserCompat {
             }
             return pkg;
         }
-
     }
 
+    /**
+     * 低版本的处理
+     */
     private static final class PackageParserLegacy {
-
         static final PackageParser.Package parsePackage(Context context, File apk, int flags) {
             PackageParser parser = new PackageParser(apk.getAbsolutePath());
-            PackageParser.Package pkg = parser.parsePackage(apk, apk.getAbsolutePath(), context.getResources().getDisplayMetrics(), flags);
+            PackageParser.Package pkg = parser.parsePackage(apk, apk.getAbsolutePath(), context.getResources()
+                    .getDisplayMetrics(), flags);
             ReflectUtil.invokeNoException(PackageParser.class, parser, "collectCertificates",
                     new Class[]{PackageParser.Package.class, int.class}, pkg, flags);
             return pkg;
         }
-
     }
 
 }

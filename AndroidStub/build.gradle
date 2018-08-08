@@ -5,7 +5,6 @@ apply plugin: 'com.android.library'
 
 android {
     compileSdkVersion VERSION_COMPILE_SDK
-    buildToolsVersion VERSION_BUILD_TOOLS
 
     defaultConfig {
         minSdkVersion VERSION_MIN_SDK
@@ -28,11 +27,11 @@ android {
     }
 }
 
-android.libraryVariants.all  { variant ->
+android.libraryVariants.all { variant ->
     def jarTask = project.tasks.create("jar${variant.name.capitalize()}", Jar)
     jarTask.excludes = [
-        'android/BuildConfig.class',
-        'android/R.class'
+            'android/BuildConfig.class',
+            'android/R.class'
     ]
     jarTask.dependsOn variant.javaCompile
     jarTask.from variant.javaCompile.destinationDir
