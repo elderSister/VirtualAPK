@@ -1,14 +1,21 @@
 package com.didi.virtualapk.hooker
 
 import com.android.build.gradle.api.ApkVariant
-import com.android.build.gradle.internal.dependency.ManifestDependencyImpl
+import com.android.build.gradle.internal.scope.TaskOutputHolder
 import com.android.build.gradle.tasks.MergeManifests
-import com.android.builder.dependency.ManifestDependency
+import com.didi.virtualapk.collector.dependence.DependenceInfo
+import com.didi.virtualapk.utils.Log
+import com.didi.virtualapk.utils.Reflect
 import groovy.xml.QName
 import groovy.xml.XmlUtil
 import org.gradle.api.Project
-import com.didi.virtualapk.collector.dependence.DependenceInfo
+import org.gradle.api.artifacts.ArtifactCollection
+import org.gradle.api.artifacts.result.ResolvedArtifactResult
+import org.gradle.api.file.FileCollection
+import org.gradle.api.internal.file.AbstractFileCollection
+import org.gradle.api.tasks.TaskDependency
 
+import java.util.function.Consumer
 import java.util.function.Predicate
 
 /**
@@ -26,13 +33,13 @@ class MergeManifestsHooker extends GradleTaskHooker<MergeManifests> {
 
     @Override
     String getTaskName() {
-        return "process${apkVariant.name.capitalize()}Manifest"
+        return scope.getTaskName('process', 'Manifest')
     }
 
     @Override
     void beforeTaskExecute(MergeManifests task) {
 
-        def stripAarNames = virtualApk.stripDependencies.
+        def stripAarNames = vaContext.stripDependencies.
                 findAll {
                     it.dependenceType == DependenceInfo.DependenceType.AAR
                 }.
@@ -40,38 +47,9 @@ class MergeManifestsHooker extends GradleTaskHooker<MergeManifests> {
                     "${dep.group}:${dep.artifact}:${dep.version}"
                 } as Set<String>
 
-        def manifestDependencies = task.libraries
-        manifestDependencies.removeIf(new Predicate<ManifestDependencyImpl>() {
-            @Override
-            boolean test(ManifestDependencyImpl manifestDependency) {
-                return stripAarNames.contains("${manifestDependency.name}")
-            }
-        })
-
-        manifestDependencies.each {
-            stripManifestDep(it, stripAarNames)
-        }
-
-        task.libraries = manifestDependencies
-    }
-
-    /**
-     * Recursively removes the manifests need be stripped(already exist in host apk) in transitive manifest dependencies
-     * @param manifest The target ManifestDependency who's transitive dependencies will be filtered
-     * @param stripAarNames Set of aar names need stripped
-     */
-    void stripManifestDep(ManifestDependency manifest, Set stripAarNames) {
-        if (manifest == null) return
-
-        manifest.manifestDependencies.removeIf(new Predicate<ManifestDependency>() {
-            @Override
-            boolean test(ManifestDependency manifestDependency) {
-                stripAarNames.contains("${manifestDependency.name}")
-            }
-        })
-        manifest.manifestDependencies.each {
-            stripManifestDep(it, stripAarNames)
-        }
+        Reflect reflect = Reflect.on(task)
+        ArtifactCollection manifests = new FixedArtifactCollection(this, reflect.get('manifests'), stripAarNames)
+        reflect.set('manifests', manifests)
     }
 
     /**
@@ -79,7 +57,12 @@ class MergeManifestsHooker extends GradleTaskHooker<MergeManifests> {
      */
     @Override
     void afterTaskExecute(MergeManifests task) {
-        final File xml = task.manifestOutputFile
+        variantData.outputScope.getOutputs(TaskOutputHolder.TaskOutputType.MERGED_MANIFESTS).each {
+            rewrite(it.outputFile)
+        }
+    }
+    
+    void rewrite(File xml) {
         if (xml?.exists()) {
             final Node manifest = new XmlParser().parse(xml)
 
@@ -93,6 +76,84 @@ class MergeManifestsHooker extends GradleTaskHooker<MergeManifests> {
             xml.withPrintWriter('utf-8', { pw ->
                 XmlUtil.serialize(manifest, pw)
             })
+        }
+    }
+    
+    private static class FixedArtifactCollection implements ArtifactCollection {
+
+        private MergeManifestsHooker hooker
+        private ArtifactCollection origin
+        def stripAarNames
+        
+        FixedArtifactCollection(MergeManifestsHooker hooker, ArtifactCollection origin, stripAarNames) {
+            this.hooker = hooker
+            this.origin = origin
+            this.stripAarNames = stripAarNames
+        }
+
+        @Override
+        FileCollection getArtifactFiles() {
+            Set<File> set = getArtifacts().collect { ResolvedArtifactResult result ->
+                result.file
+            } as Set<File>
+            FileCollection fileCollection = origin.getArtifactFiles()
+
+            return new AbstractFileCollection() {
+                @Override
+                String getDisplayName() {
+                    return fileCollection.getDisplayName()
+                }
+
+                @Override
+                TaskDependency getBuildDependencies() {
+                    return fileCollection.getBuildDependencies()
+                }
+
+                @Override
+                Set<File> getFiles() {
+                    Set<File> files = new LinkedHashSet(fileCollection.getFiles())
+                    files.retainAll(set)
+                    return files
+                }
+            }
+        }
+
+        @Override
+        Set<ResolvedArtifactResult> getArtifacts() {
+            Set<ResolvedArtifactResult> set = origin.getArtifacts()
+            set.removeIf(new Predicate<ResolvedArtifactResult>() {
+                @Override
+                boolean test(ResolvedArtifactResult result) {
+                    boolean ret = stripAarNames.contains("${result.id.componentIdentifier.displayName}")
+                    if (ret) {
+                        Log.i 'MergeManifestsHooker', "Stripped manifest of artifact: ${result} -> ${result.file}"
+                    }
+                    return ret
+                }
+            })
+
+            hooker.mark()
+            return set
+        }
+
+        @Override
+        Collection<Throwable> getFailures() {
+            return origin.getFailures()
+        }
+
+        @Override
+        Iterator<ResolvedArtifactResult> iterator() {
+            return getArtifacts().iterator()
+        }
+
+        @Override
+        void forEach(Consumer<? super ResolvedArtifactResult> action) {
+            getArtifacts().forEach(action)
+        }
+
+        @Override
+        Spliterator<ResolvedArtifactResult> spliterator() {
+            return getArtifacts().spliterator()
         }
     }
 }

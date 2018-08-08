@@ -4,7 +4,6 @@ import com.android.build.gradle.tasks.ProcessAndroidResources
 import com.didi.virtualapk.VAExtention
 import com.didi.virtualapk.collector.dependence.AarDependenceInfo
 import com.didi.virtualapk.collector.res.ResourceEntry
-
 import com.didi.virtualapk.collector.res.StyleableEntry
 import com.google.common.collect.ArrayListMultimap
 import com.google.common.collect.ListMultimap
@@ -20,6 +19,7 @@ class ResourceCollector {
 
     private Project project
     private VAExtention virtualApk
+    private VAExtention.VAContext vaContext
 
     /**
      * Gradle task of process resource in Android build system
@@ -57,11 +57,12 @@ class ResourceCollector {
 
         this.project = project
         virtualApk = project.virtualApk
+        vaContext = virtualApk.getVaContext(par.variantName)
 
         processResTask = par
 
-        allRSymbolFile = new File(par.textSymbolOutputDir, 'R.txt')
-        hostRSymbolFile = virtualApk.hostSymbolFile
+        allRSymbolFile = par.textSymbolOutputFile
+        hostRSymbolFile = vaContext.hostSymbolFile
     }
 
     /**
@@ -84,7 +85,7 @@ class ResourceCollector {
         reassignPluginResourceId()
 
         //5、Collect all the resources in the retained AARs, to regenerate the R java file that uses the new resource ID
-        virtualApk.retainedAarLibs.each {
+        vaContext.retainedAarLibs.each {
             gatherReservedAarResources(it)
         }
     }
@@ -185,7 +186,9 @@ class ResourceCollector {
             List<String> values = styleableEntry.valueAsList
             values.eachWithIndex { hexResId, idx ->
                 ResourceEntry resEntry = attrEntries.find { it.hexResourceId == hexResId }
-                values[idx] = resEntry?.hexNewResourceId
+                if (resEntry != null) {
+                    values[idx] = resEntry.hexNewResourceId
+                }
             }
             styleableEntry.value = values
         }
@@ -262,7 +265,7 @@ class ResourceCollector {
         }
 
         vendorTypeFile.withPrintWriter { pw ->
-            virtualApk.retainedAarLibs.each { aarLib ->
+            vaContext.retainedAarLibs.each { aarLib ->
                 pw.println "${aarLib.name}"
 
                 aarLib.aarResources.values().each {

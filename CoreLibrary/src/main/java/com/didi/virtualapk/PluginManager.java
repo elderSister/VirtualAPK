@@ -28,6 +28,7 @@ import android.content.IContentProvider;
 import android.content.Intent;
 import android.content.pm.ProviderInfo;
 import android.content.pm.ResolveInfo;
+import android.databinding.DataBinderMapperProxy;
 import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
@@ -72,6 +73,7 @@ public class PluginManager {
      * 记录插件信息的map
      */
     private Map<String, LoadedPlugin> mPlugins = new ConcurrentHashMap<>();
+    private final List<Callback> mCallbacks = new ArrayList<>();
 
     /**
      * Hooked instrumentation
@@ -111,16 +113,10 @@ public class PluginManager {
      * 开始Hook
      */
     private void prepare() {
-        // 全局Context设置
         Systems.sHostContext = getHostContext();
-        // Instrumentation Hook
-        this.hookInstrumentationAndHandler();
-        // AMS Hook 分版本，26安卓8.0
-        if (Build.VERSION.SDK_INT >= 26) {
-            this.hookAMSForO();
-        } else {
-            this.hookSystemServices();
-        }
+        hookInstrumentationAndHandler();
+        hookSystemServices();
+        hookDataBindingUtil();
     }
 
     /**
@@ -145,40 +141,52 @@ public class PluginManager {
     }
 
     /**
-     * hookSystemServices, but need to compatible with Android O in future.
+     * DataBinding
      */
-    @SuppressWarnings("unchecked")
-    private void hookSystemServices() {
+    private void hookDataBindingUtil() {
         try {
-            Singleton<IActivityManager> defaultSingleton = (Singleton<IActivityManager>) ReflectUtil
-                    .getField(ActivityManagerNative.class, null, "gDefault");
-            IActivityManager activityManagerProxy = ActivityManagerProxy.newInstance(
-                    this, defaultSingleton.get());
+            Class cls = Class.forName("android.databinding.DataBindingUtil");
+            Object old = ReflectUtil.getField(cls, null, "sMapper");
+            Callback callback = new DataBinderMapperProxy(old);
+            ReflectUtil.setField(cls, null, "sMapper", callback);
 
-            // Hook IActivityManager from ActivityManagerNative
-            ReflectUtil.setField(defaultSingleton.getClass().getSuperclass(), defaultSingleton,
-                    "mInstance", activityManagerProxy);
+            addCallback(callback);
 
-            if (defaultSingleton.get() == activityManagerProxy) {
-                this.mActivityManager = activityManagerProxy;
-            }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
+    public void addCallback(Callback callback) {
+        if (callback == null) {
+            return;
+        }
+        synchronized (mCallbacks) {
+            mCallbacks.add(callback);
+        }
+    }
+
     /**
-     * 安卓8.0之后hook ams 即可
+     * hookSystemServices, but need to compatible with Android O in future.
      */
     @SuppressWarnings("unchecked")
-    private void hookAMSForO() {
+    private void hookSystemServices() {
         try {
-            Singleton<IActivityManager> defaultSingleton = (Singleton<IActivityManager>) ReflectUtil
-                    .getField(ActivityManager.class, null, "IActivityManagerSingleton");
-            IActivityManager activityManagerProxy = ActivityManagerProxy
-                    .newInstance(this, defaultSingleton.get());
-            ReflectUtil.setField(defaultSingleton.getClass().getSuperclass(), defaultSingleton
-                    , "mInstance", activityManagerProxy);
+            Singleton<IActivityManager> defaultSingleton;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                defaultSingleton = (Singleton<IActivityManager>) ReflectUtil.getField(ActivityManager.class, null, "IActivityManagerSingleton");
+            } else {
+                defaultSingleton = (Singleton<IActivityManager>) ReflectUtil.getField(ActivityManagerNative.class, null, "gDefault");
+            }
+            IActivityManager activityManagerProxy = ActivityManagerProxy.newInstance(this, defaultSingleton.get());
+
+            // Hook IActivityManager from ActivityManagerNative
+            ReflectUtil.setField(defaultSingleton.getClass().getSuperclass(), defaultSingleton, "mInstance", activityManagerProxy);
+
+            if (defaultSingleton.get() == activityManagerProxy) {
+                this.mActivityManager = activityManagerProxy;
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -263,6 +271,11 @@ public class PluginManager {
         LoadedPlugin plugin = LoadedPlugin.create(this, this.mContext, apk);
         if (null != plugin) {
             this.mPlugins.put(plugin.getPackageName(), plugin);
+            synchronized (mCallbacks) {
+                for (int i = 0; i < mCallbacks.size(); i++) {
+                    mCallbacks.get(i).onAddedLoadedPlugin(plugin);
+                }
+            }
             // try to invoke plugin's application
             plugin.invokeApplication();
         } else {
@@ -399,4 +412,7 @@ public class PluginManager {
         return resolveInfos;
     }
 
+    public interface Callback {
+        void onAddedLoadedPlugin(LoadedPlugin plugin);
+    }
 }

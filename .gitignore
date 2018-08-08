@@ -40,3 +40,4 @@ buildNumber.properties
 
 local.properties
 /VirtualApk.udb
+buildSrc

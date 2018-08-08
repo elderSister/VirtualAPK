@@ -3,15 +3,19 @@ package com.didi.virtualapk.hooker
 import com.android.build.gradle.AndroidConfig
 import com.android.build.gradle.AppExtension
 import com.android.build.gradle.api.ApkVariant
+import com.android.build.gradle.internal.scope.TaskOutputHolder
 import com.android.build.gradle.tasks.ProcessAndroidResources
 import com.android.sdklib.BuildToolInfo
 import com.didi.virtualapk.aapt.Aapt
 import com.didi.virtualapk.collector.ResourceCollector
 import com.didi.virtualapk.collector.res.ResourceEntry
 import com.didi.virtualapk.collector.res.StyleableEntry
+import com.didi.virtualapk.utils.FileUtil
+import com.didi.virtualapk.utils.Log
 import com.google.common.collect.ListMultimap
 import com.google.common.io.Files
 import org.gradle.api.Project
+
 /**
  * Filter the host resources out of the plugin apk.
  * Modify the .arsc file to delete host element,
@@ -37,7 +41,7 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
 
     @Override
     String getTaskName() {
-        return "process${apkVariant.name.capitalize()}Resources"
+        return scope.getTaskName('process', 'Resources')
     }
 
     @Override
@@ -53,13 +57,26 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
      */
     @Override
     void afterTaskExecute(ProcessAndroidResources par) {
-        def apFile = par.packageOutputFile
+        variantData.outputScope.getOutputs(TaskOutputHolder.TaskOutputType.PROCESSED_RES).each {
+            repackage(par, it.outputFile)
+        }
+    }
+
+    void repackage(ProcessAndroidResources par, File apFile) {
         def resourcesDir = new File(apFile.parentFile, Files.getNameWithoutExtension(apFile.name))
 
         /*
          * Clean up resources merge directory
          */
         resourcesDir.deleteDir()
+
+        File backupFile = new File(apFile.getParentFile(), "${Files.getNameWithoutExtension(apFile.name)}-original.${Files.getFileExtension(apFile.name)}")
+        backupFile.delete()
+        project.copy {
+            from apFile
+            into apFile.getParentFile()
+            rename { backupFile.name }
+        }
 
         /*
          * Unzip resources-${variant.name}.ap_
@@ -73,6 +90,13 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
             include 'res/**/*'
         }
 
+//        File backupDir = new File(resourcesDir.parentFile, resourcesDir.name + '-original')
+//        backupDir.deleteDir()
+//        project.copy {
+//            from project.fileTree(resourcesDir)
+//            into backupDir
+//        }
+
         resourceCollector = new ResourceCollector(project, par)
         resourceCollector.collect()
 
@@ -80,7 +104,7 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
         def retainedStylealbes = convertStyleablesForAapt(resourceCollector.pluginStyleables)
         def resIdMap = resourceCollector.resIdMap
 
-        def rSymbolFile = new File(par.textSymbolOutputDir, 'R.txt')
+        def rSymbolFile = par.textSymbolOutputFile
         def libRefTable = ["${virtualApk.packageId}": par.packageForR]
         def filteredResources = [] as HashSet<String>
         def updatedResources = [] as HashSet<String>
@@ -92,6 +116,12 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
         //Modify the arsc file, and replace ids of related xml files
         aapt.filterPackage(retainedTypes, retainedStylealbes, virtualApk.packageId, resIdMap, libRefTable, updatedResources)
 
+        File hostDir = vaContext.getBuildDir(scope)
+        FileUtil.saveFile(hostDir, "${taskName}-retainedTypes", retainedTypes)
+        FileUtil.saveFile(hostDir, "${taskName}-retainedStylealbes", retainedStylealbes)
+        FileUtil.saveFile(hostDir, "${taskName}-filteredResources", filteredResources)
+        FileUtil.saveFile(hostDir, "${taskName}-updatedResources", updatedResources)
+
         /*
          * Delete filtered entries and then add updated resources into resources-${variant.name}.ap_
          */
@@ -102,10 +132,12 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
             workingDir resourcesDir
             args 'add', apFile.path
             args updatedResources
-            standardOutput = new ByteArrayOutputStream()
+            standardOutput = System.out
+            errorOutput = System.err
         }
 
         updateRJava(aapt, par.sourceOutputDir)
+        mark()
     }
 
     /**
@@ -117,20 +149,31 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
      *
      */
     def updateRJava(Aapt aapt, File sourceOutputDir) {
+        File vaBuildDir = vaContext.getBuildDir(scope)
+        File backupDir = new File(vaBuildDir, "origin/r")
 
-        sourceOutputDir.deleteDir()
+        project.ant.move(todir: backupDir) {
+            fileset(dir: sourceOutputDir) {
+                include(name: '**/R.java')
+            }
+        }
 
-        def rSourceFile = new File(sourceOutputDir, "${virtualApk.packagePath}${File.separator}R.java")
+        FileUtil.deleteEmptySubfolders(sourceOutputDir)
+
+        def rSourceFile = new File(sourceOutputDir, "${vaContext.packagePath}${File.separator}R.java")
         aapt.generateRJava(rSourceFile, apkVariant.applicationId, resourceCollector.allResources, resourceCollector.allStyleables)
+        Log.i 'ProcessResourcesHooker', "Updated R.java: ${rSourceFile.absoluteFile}"
 
-        def splitRSourceFile = new File(sourceOutputDir.parentFile, "va${File.separator}${virtualApk.packagePath}${File.separator}R.java")
+        def splitRSourceFile = new File(vaBuildDir, "source${File.separator}r${File.separator}${vaContext.packagePath}${File.separator}R.java")
         aapt.generateRJava(splitRSourceFile, apkVariant.applicationId, resourceCollector.pluginResources, resourceCollector.pluginStyleables)
-        virtualApk.splitRJavaFile = splitRSourceFile
+        Log.i 'ProcessResourcesHooker', "Updated R.java: ${splitRSourceFile.absoluteFile}"
+        vaContext.splitRJavaFile = splitRSourceFile
 
-        virtualApk.retainedAarLibs.each {
+        vaContext.retainedAarLibs.each {
             def aarPackage = it.package
-            def rJavaFile = new File(sourceOutputDir, "${aarPackage.replaceAll('\\.', File.separator)}${File.separator}R.java")
+            def rJavaFile = new File(sourceOutputDir, "${aarPackage.replace('.'.charAt(0), File.separatorChar)}${File.separator}R.java")
             aapt.generateRJava(rJavaFile, aarPackage, it.aarResources, it.aarStyleables)
+            Log.i 'ProcessResourcesHooker', "Updated R.java: ${rJavaFile.absoluteFile}"
         }
     }
 

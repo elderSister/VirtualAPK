@@ -3,10 +3,9 @@ package com.didi.virtualapk.hooker
 import com.android.build.gradle.api.ApkVariant
 import com.android.build.gradle.internal.pipeline.TransformTask
 import com.android.build.gradle.internal.transforms.ProGuardTransform
-import com.android.builder.dependency.JarDependency
+import com.didi.virtualapk.collector.dependence.AarDependenceInfo
 import org.gradle.api.InvalidUserDataException
 import org.gradle.api.Project
-import com.didi.virtualapk.collector.dependence.DependenceInfo
 
 /**
  * Apply host mapping file to maintain compatibility between the plugin and host apk.
@@ -23,7 +22,7 @@ class ProguardHooker extends GradleTaskHooker<TransformTask> {
     }
 
     @Override
-    String getTaskName() {
+    String getTransformName() {
         return "proguard"
     }
 
@@ -64,14 +63,15 @@ class ProguardHooker extends GradleTaskHooker<TransformTask> {
             proguardTransform.applyTestedMapping(applyMappingFile)
         }
 
-        virtualApk.stripDependencies.each {
+        vaContext.stripDependencies.each {
             proguardTransform.libraryJar(it.jarFile)
-            if (it.dependenceType == DependenceInfo.DependenceType.AAR) {
-                it.localDependencies.each { JarDependency localJar ->
-                    proguardTransform.libraryJar(localJar.jarFile)
+            if (it instanceof AarDependenceInfo) {
+                it.localJars.each {
+                    proguardTransform.libraryJar(it)
                 }
             }
         }
+        mark()
     }
 
     @Override

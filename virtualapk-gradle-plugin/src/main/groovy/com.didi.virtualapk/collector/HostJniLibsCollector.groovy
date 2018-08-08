@@ -3,10 +3,10 @@ package com.didi.virtualapk.collector
 import com.android.SdkConstants
 import com.android.annotations.NonNull
 import com.android.build.api.transform.QualifiedContent
-import com.android.ide.common.packaging.PackagingUtils
 import com.didi.virtualapk.collector.dependence.AarDependenceInfo
 import com.didi.virtualapk.collector.dependence.DependenceInfo
 import com.didi.virtualapk.collector.dependence.JarDependenceInfo
+import com.didi.virtualapk.utils.PackagingUtils
 import com.google.common.collect.ArrayListMultimap
 import com.google.common.collect.ListMultimap
 
@@ -41,7 +41,7 @@ class HostJniLibsCollector {
      */
     def collect(Collection<DependenceInfo> stripDependencies) {
         stripDependencies.each {
-            if (it.dependenceType == DependenceInfo.DependenceType.AAR) {
+            if (it instanceof AarDependenceInfo) {
                 gatherListFromFolder(it as AarDependenceInfo, jniFileList)
             } else {
                 gatherListFromJar(it as JarDependenceInfo, jniFileList)
@@ -120,7 +120,7 @@ class HostJniLibsCollector {
             @NonNull File file,
             @NonNull String path,
             @NonNull AarDependenceInfo aarDependenceInfo,
-            @NonNull ListMultimap<String, QualifiedContent> content) {
+            @NonNull ListMultimap<String, DependenceInfo> content) {
         File[] children = file.listFiles(new FilenameFilter() {
             @Override
             public boolean accept(File f, String name) {

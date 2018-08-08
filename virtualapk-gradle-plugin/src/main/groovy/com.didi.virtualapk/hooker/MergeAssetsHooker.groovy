@@ -3,12 +3,16 @@ package com.didi.virtualapk.hooker
 import com.android.build.gradle.api.ApkVariant
 import com.android.build.gradle.tasks.MergeSourceSetFolders
 import com.android.ide.common.res2.AssetSet
+import com.didi.virtualapk.collector.dependence.AarDependenceInfo
+import com.didi.virtualapk.utils.Log
+import com.didi.virtualapk.utils.Reflect
 import org.gradle.api.Project
 
 import java.util.function.Predicate
+import java.util.function.Supplier
 
 /**
- * Remove the asset directory included in the excluded dependency before mergeAssets task
+ * Remove the asset directory included in the excluded library before mergeAssets task
  *
  * @author zhengtao
  */
@@ -20,7 +24,7 @@ class MergeAssetsHooker extends GradleTaskHooker<MergeSourceSetFolders> {
 
     @Override
     String getTaskName() {
-        return "merge${apkVariant.name.capitalize()}Assets"
+        return scope.getTaskName('merge', 'Assets')
     }
 
     /**
@@ -30,22 +34,48 @@ class MergeAssetsHooker extends GradleTaskHooker<MergeSourceSetFolders> {
     @Override
     void beforeTaskExecute(MergeSourceSetFolders task) {
 
-        Set<String> retainedAssetPaths = virtualApk.retainedAarLibs.collect {
-            it.assetsFolder.path
+        Set<String> strippedAssetPaths = vaContext.stripDependencies.collect {
+            if (it instanceof AarDependenceInfo) {
+                return it.assetsFolder.path
+            }
+            return ''
         }
 
-        List<AssetSet> assetSets = task.inputDirectorySets
-        assetSets.removeIf(new Predicate<AssetSet>() {
-            @Override
-            boolean test(AssetSet assetSet) {
-                return !retainedAssetPaths.contains(assetSet.sourceFiles.get(0).path)
-            }
-        })
-
-        task.inputDirectorySets = assetSets
+        Reflect reflect = Reflect.on(task)
+        reflect.set('assetSetSupplier', new FixedSupplier(this, reflect.get('assetSetSupplier'), strippedAssetPaths))
     }
 
     @Override
     void afterTaskExecute(MergeSourceSetFolders task) {
+    }
+    
+    static class FixedSupplier implements Supplier<List<AssetSet>> {
+
+        MergeAssetsHooker hooker
+        Supplier<List<AssetSet>> origin
+        Set<String> strippedAssetPaths
+        
+        FixedSupplier(MergeAssetsHooker hooker, Supplier<List<AssetSet>> origin, Set<String> strippedAssetPaths) {
+            this.hooker = hooker
+            this.origin = origin
+            this.strippedAssetPaths = strippedAssetPaths
+        }
+        
+        @Override
+        List<AssetSet> get() {
+            List<AssetSet> assetSets = origin.get()
+            assetSets.removeIf(new Predicate<AssetSet>() {
+                @Override
+                boolean test(AssetSet assetSet) {
+                    boolean ret = strippedAssetPaths.contains(assetSet.sourceFiles.get(0).path)
+                    if (ret) {
+                        Log.i 'MergeAssetsHooker', "Stripped asset of artifact: ${assetSet} -> ${assetSet.sourceFiles.get(0).path}"
+                    }
+                    return ret
+                }
+            })
+            hooker.mark()
+            return assetSets
+        }
     }
 }

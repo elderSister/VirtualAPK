@@ -2,7 +2,7 @@ package com.didi.virtualapk.hooker
 
 import com.android.build.gradle.api.ApkVariant
 import com.android.build.gradle.internal.pipeline.TransformTask
-import com.didi.virtualapk.VAExtention
+import com.didi.virtualapk.utils.Log
 import org.apache.commons.io.FilenameUtils
 import org.gradle.api.Project
 
@@ -19,7 +19,7 @@ class DxTaskHooker extends GradleTaskHooker<TransformTask> {
     }
 
     @Override
-    String getTaskName() {
+    String getTransformName() {
         return "dex"
     }
 
@@ -32,29 +32,45 @@ class DxTaskHooker extends GradleTaskHooker<TransformTask> {
     @Override
     void beforeTaskExecute(TransformTask task) {
         task.inputs.files.each { input ->
+//            Log.i 'DxTaskHooker', "${task.name}: ${input.absoluteFile}"
             if(input.directory) {
                 input.eachFileRecurse { file ->
-                    if (file.directory && file.path.endsWith(virtualApk.packagePath)) {
+                    handleFile(file)
+                }
+            } else {
+                handleFile(input)
+            }
+        }
+    }
 
-                        recompileSplitR(file)
+    void handleFile(File file) {
+        if (file.directory && file.path.endsWith(vaContext.packagePath)) {
 
-                    } else if (file.file && file.name.endsWith('.jar')) {
-                        // Decompress jar file
-                        File unzipJarDir = new File(file.parentFile, FilenameUtils.getBaseName(file.name))
-                        project.copy {
-                            from project.zipTree(file)
-                            into unzipJarDir
-                        }
+            if (recompileSplitR(file)) {
+                Log.i 'DxTaskHooker', "Recompiled R.java in dir: ${file.absoluteFile}"
+            }
 
-                        // VirtualApk Package Dir
-                        File pkgDir = new File(unzipJarDir, virtualApk.packagePath)
-                        if (pkgDir.exists()) {
-                            boolean compileResult = recompileSplitR(pkgDir)
-                            if (compileResult) {
-                                project.ant.zip(baseDir: unzipJarDir, destFile: file)
-                            }
-                        }
+        } else if (file.file && file.name.endsWith('.jar')) {
+            // Decompress jar file
+            File unzipJarDir = new File(file.parentFile, FilenameUtils.getBaseName(file.name))
+            project.copy {
+                from project.zipTree(file)
+                into unzipJarDir
+            }
+
+            // VirtualApk Package Dir
+            File pkgDir = new File(unzipJarDir, vaContext.packagePath)
+            if (pkgDir.exists()) {
+                if (recompileSplitR(pkgDir)) {
+                    Log.i 'DxTaskHooker', "Recompiled R.java in jar: ${file.absoluteFile}"
+                    File backupDir = new File(vaContext.getBuildDir(scope), 'origin/classes')
+                    backupDir.deleteDir()
+                    project.copy {
+                        from file
+                        into backupDir
                     }
+
+                    project.ant.zip(baseDir: unzipJarDir, destFile: file)
                 }
             }
         }
@@ -82,14 +98,15 @@ class DxTaskHooker extends GradleTaskHooker<TransformTask> {
                 it.delete()
             }
 
-            String baseDir = pkgDir.path - "/${virtualApk.packagePath}"
+            String baseDir = pkgDir.path - "${File.separator}${vaContext.packagePath}"
 
             project.ant.javac(
-                srcdir: virtualApk.splitRJavaFile.parentFile,
+                srcdir: vaContext.splitRJavaFile.parentFile,
                 source: apkVariant.javaCompiler.sourceCompatibility,
                 target: apkVariant.javaCompiler.targetCompatibility,
                 destdir: new File(baseDir))
 
+            mark()
             return true
         }
 
