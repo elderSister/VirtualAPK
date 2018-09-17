@@ -26,27 +26,32 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.IContentProvider;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.content.pm.ResolveInfo;
-import android.databinding.DataBinderMapperProxy;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
 import android.util.Log;
 import android.util.Singleton;
 
 import com.didi.virtualapk.delegate.ActivityManagerProxy;
 import com.didi.virtualapk.delegate.IContentProviderProxy;
+import com.didi.virtualapk.delegate.RemoteContentProvider;
 import com.didi.virtualapk.internal.ComponentsHandler;
+import com.didi.virtualapk.internal.Constants;
 import com.didi.virtualapk.internal.LoadedPlugin;
-import com.didi.virtualapk.internal.PluginContentResolver;
 import com.didi.virtualapk.internal.VAInstrumentation;
-import com.didi.virtualapk.utils.PluginUtil;
-import com.didi.virtualapk.utils.ReflectUtil;
+import com.didi.virtualapk.internal.utils.PluginUtil;
+import com.didi.virtualapk.utils.Reflector;
 import com.didi.virtualapk.utils.RunUtil;
 
 import java.io.File;
-import java.io.FileNotFoundException;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -58,172 +63,211 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class PluginManager {
 
-    public static final String TAG = "PluginManager";
+    public static final String TAG = Constants.TAG_PREFIX + "PluginManager";
+
     private static volatile PluginManager sInstance = null;
 
-    /**
-     * Context of host app
-     */
-    private Context mContext;
-    /**
-     * 可以认为是处理一些插件方法的工具类吧
-     */
-    private ComponentsHandler mComponentsHandler;
-    /**
-     * 记录插件信息的map
-     */
-    private Map<String, LoadedPlugin> mPlugins = new ConcurrentHashMap<>();
-    private final List<Callback> mCallbacks = new ArrayList<>();
+    // Context of host app
+    protected final Context mContext;
+    protected final Application mApplication;
+    protected ComponentsHandler mComponentsHandler;
+    protected final Map<String, LoadedPlugin> mPlugins = new ConcurrentHashMap<>();
+    protected final List<Callback> mCallbacks = new ArrayList<>();
 
-    /**
-     * Hooked instrumentation
-     */
-    private Instrumentation mInstrumentation;
-    /**
-     * Hooked IActivityManager binder
-     */
-    private IActivityManager mActivityManager;
-    /**
-     * Hooked IContentProvider binder
-     */
-    private IContentProvider mIContentProvider;
+    protected VAInstrumentation mInstrumentation; // Hooked instrumentation
+    protected IActivityManager mActivityManager; // Hooked IActivityManager binder
+    protected IContentProvider mIContentProvider; // Hooked IContentProvider binder
 
     public static PluginManager getInstance(Context base) {
         if (sInstance == null) {
             synchronized (PluginManager.class) {
                 if (sInstance == null) {
-                    sInstance = new PluginManager(base);
+                    sInstance = createInstance(base);
                 }
             }
         }
+
         return sInstance;
     }
-
-    private PluginManager(Context context) {
-        Context app = context.getApplicationContext();
-        if (app == null) {
-            this.mContext = context;
-        } else {
-            this.mContext = ((Application) app).getBaseContext();
+    
+    private static PluginManager createInstance(Context context) {
+        try {
+            Bundle metaData = context.getPackageManager()
+                                     .getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA)
+                                     .metaData;
+            
+            if (metaData == null) {
+                return new PluginManager(context);
+            }
+            
+            String factoryClass = metaData.getString("VA_FACTORY");
+            
+            if (factoryClass == null) {
+                return new PluginManager(context);
+            }
+            
+            PluginManager pluginManager = Reflector.on(factoryClass).method("create", Context.class).call(context);
+            
+            if (pluginManager != null) {
+                Log.d(TAG, "Created a instance of " + pluginManager.getClass());
+                return pluginManager;
+            }
+    
+        } catch (Exception e) {
+            Log.w(TAG, "Created the instance error!", e);
         }
-        prepare();
+    
+        return new PluginManager(context);
     }
 
-    /**
-     * 开始Hook
-     */
-    private void prepare() {
-        Systems.sHostContext = getHostContext();
+    protected PluginManager(Context context) {
+        if (context instanceof Application) {
+            this.mApplication = (Application) context;
+            this.mContext = mApplication.getBaseContext();
+        } else {
+            final Context app = context.getApplicationContext();
+            if (app == null) {
+                this.mContext = context;
+                this.mApplication = ActivityThread.currentApplication();
+            } else {
+                this.mApplication = (Application) app;
+                this.mContext = mApplication.getBaseContext();
+            }
+        }
+        
+        mComponentsHandler = createComponentsHandler();
+        hookCurrentProcess();
+    }
+
+    protected void hookCurrentProcess() {
         hookInstrumentationAndHandler();
         hookSystemServices();
         hookDataBindingUtil();
     }
 
-    /**
-     * init,prepare方法更早的在构造函数里面调用了
-     */
     public void init() {
-        mComponentsHandler = new ComponentsHandler(this);
-        try {
-            // 最好在try一下，虽然说AsyncTask的Queue有128个队列，但是不能保证是否会溢出
-            RunUtil.getThreadPool().execute(new Runnable() {
-                @Override
-                public void run() {
-                    doInWorkThread();
-                }
-            });
-        } catch (Exception e) {
-            // ignored
+        RunUtil.getThreadPool().execute(new Runnable() {
+            @Override
+            public void run() {
+                doInWorkThread();
+            }
+        });
+    }
+
+    protected void doInWorkThread() {
+    }
+    
+    public Application getHostApplication() {
+        return this.mApplication;
+    }
+    
+    protected ComponentsHandler createComponentsHandler() {
+        return new ComponentsHandler(this);
+    }
+    
+    protected VAInstrumentation createInstrumentation(Instrumentation origin) throws Exception {
+        return new VAInstrumentation(this, origin);
+    }
+    
+    protected ActivityManagerProxy createActivityManagerProxy(IActivityManager origin) throws Exception {
+        return new ActivityManagerProxy(this, origin);
+    }
+    
+    protected LoadedPlugin createLoadedPlugin(File apk) throws Exception {
+        return new LoadedPlugin(this, this.mContext, apk);
+    }
+    
+    protected void hookDataBindingUtil() {
+        Reflector.QuietReflector reflector = Reflector.QuietReflector.on("android.databinding.DataBindingUtil").field("sMapper");
+        Object old = reflector.get();
+        if (old != null) {
+            try {
+                Callback callback = Reflector.on("android.databinding.DataBinderMapperProxy").constructor().newInstance();
+                reflector.set(callback);
+                addCallback(callback);
+                Log.d(TAG, "hookDataBindingUtil succeed : " + callback);
+            } catch (Reflector.ReflectedException e) {
+                Log.w(TAG, e);
+            }
         }
     }
-
-    private void doInWorkThread() {
-    }
-
-    /**
-     * DataBinding
-     */
-    private void hookDataBindingUtil() {
-        try {
-            Class cls = Class.forName("android.databinding.DataBindingUtil");
-            Object old = ReflectUtil.getField(cls, null, "sMapper");
-            Callback callback = new DataBinderMapperProxy(old);
-            ReflectUtil.setField(cls, null, "sMapper", callback);
-
-            addCallback(callback);
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
+    
     public void addCallback(Callback callback) {
         if (callback == null) {
             return;
         }
         synchronized (mCallbacks) {
+            if (mCallbacks.contains(callback)) {
+                throw new RuntimeException("Already added " + callback + "!");
+            }
             mCallbacks.add(callback);
+        }
+    }
+    
+    public void removeCallback(Callback callback) {
+        synchronized (mCallbacks) {
+            mCallbacks.remove(callback);
         }
     }
 
     /**
      * hookSystemServices, but need to compatible with Android O in future.
      */
-    @SuppressWarnings("unchecked")
-    private void hookSystemServices() {
+    protected void hookSystemServices() {
         try {
             Singleton<IActivityManager> defaultSingleton;
-
+    
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                defaultSingleton = (Singleton<IActivityManager>) ReflectUtil.getField(ActivityManager.class, null, "IActivityManagerSingleton");
+                defaultSingleton = Reflector.on(ActivityManager.class).field("IActivityManagerSingleton").get();
             } else {
-                defaultSingleton = (Singleton<IActivityManager>) ReflectUtil.getField(ActivityManagerNative.class, null, "gDefault");
+                defaultSingleton = Reflector.on(ActivityManagerNative.class).field("gDefault").get();
             }
-            IActivityManager activityManagerProxy = ActivityManagerProxy.newInstance(this, defaultSingleton.get());
+            IActivityManager origin = defaultSingleton.get();
+            IActivityManager activityManagerProxy = (IActivityManager) Proxy.newProxyInstance(mContext.getClassLoader(), new Class[] { IActivityManager.class },
+                createActivityManagerProxy(origin));
 
             // Hook IActivityManager from ActivityManagerNative
-            ReflectUtil.setField(defaultSingleton.getClass().getSuperclass(), defaultSingleton, "mInstance", activityManagerProxy);
+            Reflector.with(defaultSingleton).field("mInstance").set(activityManagerProxy);
 
             if (defaultSingleton.get() == activityManagerProxy) {
                 this.mActivityManager = activityManagerProxy;
+                Log.d(TAG, "hookSystemServices succeed : " + mActivityManager);
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.w(TAG, e);
         }
     }
-
-    /**
-     * Hook Instrumentation
-     */
-    private void hookInstrumentationAndHandler() {
+    
+    protected void hookInstrumentationAndHandler() {
         try {
-            Instrumentation baseInstrumentation = ReflectUtil.getInstrumentation(this.mContext);
-            if (baseInstrumentation.getClass().getName().contains("lbe")) {
-                // reject executing in paralell space, for example, lbe.
-                System.exit(0);
-            }
-            final VAInstrumentation instrumentation = new VAInstrumentation(this, baseInstrumentation);
-            Object activityThread = ReflectUtil.getActivityThread(this.mContext);
-            ReflectUtil.setInstrumentation(activityThread, instrumentation);
-            ReflectUtil.setHandlerCallback(this.mContext, instrumentation);
+            ActivityThread activityThread = ActivityThread.currentActivityThread();
+            Instrumentation baseInstrumentation = activityThread.getInstrumentation();
+//            if (baseInstrumentation.getClass().getName().contains("lbe")) {
+//                // reject executing in paralell space, for example, lbe.
+//                System.exit(0);
+//            }
+    
+            final VAInstrumentation instrumentation = createInstrumentation(baseInstrumentation);
+            
+            Reflector.with(activityThread).field("mInstrumentation").set(instrumentation);
+            Handler mainHandler = Reflector.with(activityThread).method("getHandler").call();
+            Reflector.with(mainHandler).field("mCallback").set(instrumentation);
             this.mInstrumentation = instrumentation;
+            Log.d(TAG, "hookInstrumentationAndHandler succeed : " + mInstrumentation);
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.w(TAG, e);
         }
     }
 
-    /**
-     * hook ContentProvider
-     */
-    private void hookIContentProviderAsNeeded() {
-        Uri uri = Uri.parse(PluginContentResolver.getUri(mContext));
+    protected void hookIContentProviderAsNeeded() {
+        Uri uri = Uri.parse(RemoteContentProvider.getUri(mContext));
         mContext.getContentResolver().call(uri, "wakeup", null, null);
         try {
             Field authority = null;
-            Field mProvider = null;
-            ActivityThread activityThread = (ActivityThread) ReflectUtil.getActivityThread(mContext);
-            Map mProviderMap = (Map) ReflectUtil.getField(activityThread.getClass(), activityThread, "mProviderMap");
-            Iterator iter = mProviderMap.entrySet().iterator();
+            Field provider = null;
+            ActivityThread activityThread = ActivityThread.currentActivityThread();
+            Map providerMap = Reflector.with(activityThread).field("mProviderMap").get();
+            Iterator iter = providerMap.entrySet().iterator();
             while (iter.hasNext()) {
                 Map.Entry entry = (Map.Entry) iter.next();
                 Object key = entry.getKey();
@@ -238,12 +282,12 @@ public class PluginManager {
                     }
                     auth = (String) authority.get(key);
                 }
-                if (auth.equals(PluginContentResolver.getAuthority(mContext))) {
-                    if (mProvider == null) {
-                        mProvider = val.getClass().getDeclaredField("mProvider");
-                        mProvider.setAccessible(true);
+                if (auth.equals(RemoteContentProvider.getAuthority(mContext))) {
+                    if (provider == null) {
+                        provider = val.getClass().getDeclaredField("mProvider");
+                        provider.setAccessible(true);
                     }
-                    IContentProvider rawProvider = (IContentProvider) mProvider.get(val);
+                    IContentProvider rawProvider = (IContentProvider) provider.get(val);
                     IContentProvider proxy = IContentProviderProxy.newInstance(mContext, rawProvider);
                     mIContentProvider = proxy;
                     Log.d(TAG, "hookIContentProvider succeed : " + mIContentProvider);
@@ -251,13 +295,12 @@ public class PluginManager {
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.w(TAG, e);
         }
     }
 
     /**
      * load a plugin into memory, then invoke it's Application.
-     *
      * @param apk the file of plugin, should end with .apk
      * @throws Exception
      */
@@ -265,30 +308,35 @@ public class PluginManager {
         if (null == apk) {
             throw new IllegalArgumentException("error : apk is null.");
         }
+
         if (!apk.exists()) {
-            throw new FileNotFoundException(apk.getAbsolutePath());
+            // throw the FileNotFoundException by opening a stream.
+            InputStream in = new FileInputStream(apk);
+            in.close();
         }
-        LoadedPlugin plugin = LoadedPlugin.create(this, this.mContext, apk);
-        if (null != plugin) {
-            this.mPlugins.put(plugin.getPackageName(), plugin);
-            synchronized (mCallbacks) {
-                for (int i = 0; i < mCallbacks.size(); i++) {
-                    mCallbacks.get(i).onAddedLoadedPlugin(plugin);
-                }
-            }
-            // try to invoke plugin's application
-            plugin.invokeApplication();
-        } else {
+
+        LoadedPlugin plugin = createLoadedPlugin(apk);
+        
+        if (null == plugin) {
             throw new RuntimeException("Can't load plugin which is invalid: " + apk.getAbsolutePath());
+        }
+        
+        this.mPlugins.put(plugin.getPackageName(), plugin);
+        synchronized (mCallbacks) {
+            for (int i = 0; i < mCallbacks.size(); i++) {
+                mCallbacks.get(i).onAddedLoadedPlugin(plugin);
+            }
         }
     }
 
     public LoadedPlugin getLoadedPlugin(Intent intent) {
-        ComponentName component = PluginUtil.getComponent(intent);
-        return getLoadedPlugin(component.getPackageName());
+        return getLoadedPlugin(PluginUtil.getComponent(intent));
     }
 
     public LoadedPlugin getLoadedPlugin(ComponentName component) {
+        if (component == null) {
+            return null;
+        }
         return this.getLoadedPlugin(component.getPackageName());
     }
 
@@ -306,7 +354,7 @@ public class PluginManager {
         return this.mContext;
     }
 
-    public Instrumentation getInstrumentation() {
+    public VAInstrumentation getInstrumentation() {
         return this.mInstrumentation;
     }
 
@@ -318,6 +366,7 @@ public class PluginManager {
         if (mIContentProvider == null) {
             hookIContentProviderAsNeeded();
         }
+
         return mIContentProvider;
     }
 
@@ -336,6 +385,7 @@ public class PluginManager {
                 return resolveInfo;
             }
         }
+
         return null;
     }
 
@@ -362,8 +412,7 @@ public class PluginManager {
     }
 
     /**
-     * used in {@link com.didi.virtualapk.internal.LoadedPlugin.PluginPackageManager#queryIntentActivities(Intent, int)},
-     * do not invoke it from outside.
+     * used in PluginPackageManager, do not invoke it from outside.
      */
     @Deprecated
     public List<ResolveInfo> queryIntentActivities(Intent intent, int flags) {
@@ -375,12 +424,12 @@ public class PluginManager {
                 resolveInfos.addAll(result);
             }
         }
+
         return resolveInfos;
     }
 
     /**
-     * used in {@link com.didi.virtualapk.internal.LoadedPlugin.PluginPackageManager#queryIntentServices(Intent, int)},
-     * do not invoke it from outside.
+     * used in PluginPackageManager, do not invoke it from outside.
      */
     @Deprecated
     public List<ResolveInfo> queryIntentServices(Intent intent, int flags) {
@@ -392,12 +441,12 @@ public class PluginManager {
                 resolveInfos.addAll(result);
             }
         }
+
         return resolveInfos;
     }
 
     /**
-     * used in {@link com.didi.virtualapk.internal.LoadedPlugin.PluginPackageManager#queryBroadcastReceivers(Intent, int)} ,
-     * do not invoke it from outside.
+     * used in PluginPackageManager, do not invoke it from outside.
      */
     @Deprecated
     public List<ResolveInfo> queryBroadcastReceivers(Intent intent, int flags) {
@@ -409,6 +458,7 @@ public class PluginManager {
                 resolveInfos.addAll(result);
             }
         }
+
         return resolveInfos;
     }
 

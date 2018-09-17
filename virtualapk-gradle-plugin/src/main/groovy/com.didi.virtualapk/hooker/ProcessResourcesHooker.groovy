@@ -6,12 +6,14 @@ import com.android.build.gradle.api.ApkVariant
 import com.android.build.gradle.internal.scope.TaskOutputHolder
 import com.android.build.gradle.tasks.ProcessAndroidResources
 import com.android.sdklib.BuildToolInfo
+import com.didi.virtualapk.Constants
 import com.didi.virtualapk.aapt.Aapt
 import com.didi.virtualapk.collector.ResourceCollector
 import com.didi.virtualapk.collector.res.ResourceEntry
 import com.didi.virtualapk.collector.res.StyleableEntry
 import com.didi.virtualapk.utils.FileUtil
 import com.didi.virtualapk.utils.Log
+import com.didi.virtualapk.utils.Reflect
 import com.google.common.collect.ListMultimap
 import com.google.common.io.Files
 import org.gradle.api.Project
@@ -57,8 +59,17 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
      */
     @Override
     void afterTaskExecute(ProcessAndroidResources par) {
-        variantData.outputScope.getOutputs(TaskOutputHolder.TaskOutputType.PROCESSED_RES).each {
-            repackage(par, it.outputFile)
+        if (project.extensions.extraProperties.get(Constants.GRADLE_3_1_0)) {
+            File outputFile = Reflect.on('com.android.build.gradle.internal.scope.ExistingBuildElements')
+                    .call('from', TaskOutputHolder.TaskOutputType.PROCESSED_RES, scope.getOutput(TaskOutputHolder.TaskOutputType.PROCESSED_RES))
+                    .call('element', variantData.outputScope.mainSplit)
+                    .call('getOutputFile')
+                    .get()
+            repackage(par, outputFile)
+        } else {
+            variantData.outputScope.getOutputs(TaskOutputHolder.TaskOutputType.PROCESSED_RES).each {
+                repackage(par, it.outputFile)
+            }
         }
     }
 
@@ -105,7 +116,7 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
         def resIdMap = resourceCollector.resIdMap
 
         def rSymbolFile = par.textSymbolOutputFile
-        def libRefTable = ["${virtualApk.packageId}": par.packageForR]
+        def libRefTable = ["${virtualApk.packageId}": par.applicationId]
         def filteredResources = [] as HashSet<String>
         def updatedResources = [] as HashSet<String>
 
@@ -119,8 +130,8 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
         File hostDir = vaContext.getBuildDir(scope)
         FileUtil.saveFile(hostDir, "${taskName}-retainedTypes", retainedTypes)
         FileUtil.saveFile(hostDir, "${taskName}-retainedStylealbes", retainedStylealbes)
-        FileUtil.saveFile(hostDir, "${taskName}-filteredResources", filteredResources)
-        FileUtil.saveFile(hostDir, "${taskName}-updatedResources", updatedResources)
+        FileUtil.saveFile(hostDir, "${taskName}-filteredResources", true, filteredResources)
+        FileUtil.saveFile(hostDir, "${taskName}-updatedResources", true, updatedResources)
 
         /*
          * Delete filtered entries and then add updated resources into resources-${variant.name}.ap_
@@ -184,7 +195,6 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
      */
     def convertResourcesForAapt(ListMultimap<String, ResourceEntry> pluginResources) {
         def retainedTypes = []
-        retainedTypes.add(0,  [name : 'placeholder', id : Aapt.ID_NO_ATTR, entries: []])//attr 占位
 
         pluginResources.keySet().each { resType ->
             def firstEntry = pluginResources.get(resType).get(0)
@@ -202,13 +212,13 @@ class ProcessResourcesHooker extends GradleTaskHooker<ProcessAndroidResources> {
                         vs: resEntry.hexResourceId, _vs : resEntry.hexNewResourceId])
             }
 
-            if (resType == 'attr') {
-                retainedTypes.set(0, typeEntry)
-            } else {
-                retainedTypes.add(typeEntry)
-            }
+            retainedTypes.add(typeEntry)
         }
 
+        retainedTypes.sort { t1, t2 ->
+            t1._id - t2._id
+        }
+        
         return retainedTypes
     }
 

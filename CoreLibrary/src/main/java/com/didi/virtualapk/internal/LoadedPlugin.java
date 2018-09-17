@@ -32,6 +32,7 @@ import android.content.pm.FeatureInfo;
 import android.content.pm.InstrumentationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
+import android.content.pm.PackageItemInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageParser;
 import android.content.pm.PermissionGroupInfo;
@@ -51,17 +52,15 @@ import android.os.Process;
 import android.os.UserHandle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.annotation.WorkerThread;
 
 import com.didi.virtualapk.PluginManager;
-import com.didi.virtualapk.utils.DexUtil;
-import com.didi.virtualapk.utils.PackageParserCompat;
-import com.didi.virtualapk.utils.PluginUtil;
-import com.didi.virtualapk.utils.ReflectUtil;
+import com.didi.virtualapk.internal.utils.DexUtil;
+import com.didi.virtualapk.internal.utils.PackageParserCompat;
+import com.didi.virtualapk.internal.utils.PluginUtil;
+import com.didi.virtualapk.utils.Reflector;
 import com.didi.virtualapk.utils.RunUtil;
 
 import java.io.File;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -74,21 +73,12 @@ import dalvik.system.DexClassLoader;
 /**
  * Created by renyugang on 16/8/9.
  */
-public final class LoadedPlugin {
+public class LoadedPlugin {
 
-    public static final String TAG = "LoadedPlugin";
+    public static final String TAG = Constants.TAG_PREFIX + "LoadedPlugin";
 
-    /**
-     * 根据插件文件创建插件对象
-     *
-     * @param pluginManager PluginManager类
-     * @param host          host的Context
-     * @param apk           插件文件
-     * @return 插件对象
-     * @throws Exception 插件加载异常
-     */
-    public static LoadedPlugin create(PluginManager pluginManager, Context host, File apk) throws Exception {
-        return new LoadedPlugin(pluginManager, host, apk);
+    protected File getDir(Context context, String name) {
+        return context.getDir(name, Context.MODE_PRIVATE);
     }
 
     /**
@@ -100,17 +90,12 @@ public final class LoadedPlugin {
      * @param parent  host的ClassLoader
      * @return 插件ClassLoader
      */
-    private static ClassLoader createClassLoader(Context context, File apk, File libsDir, ClassLoader parent) {
-        // data/data/name/app_dex
-        File dexOutputDir = context.getDir(Constants.OPTIMIZE_DIR, Context.MODE_PRIVATE);
+    protected ClassLoader createClassLoader(Context context, File apk, File libsDir, ClassLoader parent) throws Exception {
+        File dexOutputDir = getDir(context, Constants.OPTIMIZE_DIR);
         String dexOutputPath = dexOutputDir.getAbsolutePath();
         DexClassLoader loader = new DexClassLoader(apk.getAbsolutePath(), dexOutputPath, libsDir.getAbsolutePath(), parent);
         if (Constants.COMBINE_CLASSLOADER) {
-            try {
-                DexUtil.insertDex(loader);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            DexUtil.insertDex(loader, parent, libsDir);
         }
         return loader;
     }
@@ -122,14 +107,19 @@ public final class LoadedPlugin {
      * @param apk     插件apk文件
      * @return 插件AssetManager
      */
-    private static AssetManager createAssetManager(Context context, File apk) {
-        try {
-            AssetManager am = AssetManager.class.newInstance();
-            ReflectUtil.invoke(AssetManager.class, am, "addAssetPath", apk.getAbsolutePath());
-            return am;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
+    protected AssetManager createAssetManager(Context context, File apk) throws Exception {
+        AssetManager am = AssetManager.class.newInstance();
+        Reflector.with(am).method("addAssetPath", String.class).call(apk.getAbsolutePath());
+        return am;
+    }
+
+    protected Resources createResources(Context context, String packageName, File apk) throws Exception {
+        if (Constants.COMBINE_RESOURCES) {
+            return ResourcesManager.createResources(context, packageName, apk);
+        } else {
+            Resources hostResources = context.getResources();
+            AssetManager assetManager = createAssetManager(context, apk);
+            return new Resources(assetManager, hostResources.getDisplayMetrics(), hostResources.getConfiguration());
         }
     }
 
@@ -140,78 +130,75 @@ public final class LoadedPlugin {
      * @param apk     插件apk文件
      * @return 插件Resources
      */
-    @WorkerThread
-    private static Resources createResources(Context context, File apk) {
-        if (Constants.COMBINE_RESOURCES) {
-            Resources resources = ResourcesManager.createResources(context, apk.getAbsolutePath());
-            ResourcesManager.hookResources(context, resources);
-            return resources;
-        } else {
-            Resources hostResources = context.getResources();
-            AssetManager assetManager = createAssetManager(context, apk);
-            return new Resources(assetManager, hostResources.getDisplayMetrics(), hostResources.getConfiguration());
-        }
+    protected PluginPackageManager createPluginPackageManager() {
+        return new PluginPackageManager();
     }
 
-    private static ResolveInfo chooseBestActivity(Intent intent, String s, int flags, List<ResolveInfo> query) {
+    public PluginContext createPluginContext(Context context) {
+        if (context == null) {
+            return new PluginContext(this);
+        }
+
+        return new PluginContext(this, context);
+    }
+
+    protected ResolveInfo chooseBestActivity(Intent intent, String s, int flags, List<ResolveInfo> query) {
         return query.get(0);
     }
 
     /**
      * 插件apk包的位置
      */
-    private final String mLocation;
-
+    protected final String mLocation;
     /**
      * PluginManager对象
      */
-    private PluginManager mPluginManager;
-    /**
-     * host的Context
-     */
-    private Context mHostContext;
+    protected PluginManager mPluginManager;
+    protected Context mHostContext;
     /**
      * plugin的Context
      */
-    private Context mPluginContext;
+    protected Context mPluginContext;
     /**
      * native lib的文件夹，按照他的写法和files，cache同级的app_valibs目录
      */
-    private final File mNativeLibDir;
+    protected final File mNativeLibDir;
     /**
      * 解析的apk的一些信息
      */
-    private final PackageParser.Package mPackage;
+    protected final PackageParser.Package mPackage;
     /**
      * PackageInfo，插件包的一些信息
      */
-    private final PackageInfo mPackageInfo;
+    protected final PackageInfo mPackageInfo;
     /**
-     * 插件Resource对象
+     *     /**
+     *      * 插件Resource对象
+     *      */
      */
-    private Resources mResources;
+    protected Resources mResources;
     /**
      * 插件ClassLoader对象
      */
-    private ClassLoader mClassLoader;
+    protected ClassLoader mClassLoader;
     /**
      * 插件apk的一些工具类
      */
-    private PluginPackageManager mPackageManager;
+    protected PluginPackageManager mPackageManager;
 
-    private Map<ComponentName, ActivityInfo> mActivityInfos;
-    private Map<ComponentName, ServiceInfo> mServiceInfos;
-    private Map<ComponentName, ActivityInfo> mReceiverInfos;
-    private Map<ComponentName, ProviderInfo> mProviderInfos;
+    protected Map<ComponentName, ActivityInfo> mActivityInfos;
+    protected Map<ComponentName, ServiceInfo> mServiceInfos;
+    protected Map<ComponentName, ActivityInfo> mReceiverInfos;
+    protected Map<ComponentName, ProviderInfo> mProviderInfos;
     /**
      * key is authorities of provider
      */
-    private Map<String, ProviderInfo> mProviders;
-    private Map<ComponentName, InstrumentationInfo> mInstrumentationInfos;
+    protected Map<String, ProviderInfo> mProviders; // key is authorities of provider
+    protected Map<ComponentName, InstrumentationInfo> mInstrumentationInfos;
 
-    private Application mApplication;
+    protected Application mApplication;
 
-    LoadedPlugin(PluginManager pluginManager, Context context, File apk) throws Exception {
+    public LoadedPlugin(PluginManager pluginManager, Context context, File apk) throws Exception {
         this.mPluginManager = pluginManager;
         this.mHostContext = context;
         this.mLocation = apk.getAbsolutePath();
@@ -232,6 +219,7 @@ public final class LoadedPlugin {
         } else {
             this.mPackageInfo.signatures = this.mPackage.mSignatures;
         }
+
         this.mPackageInfo.packageName = this.mPackage.packageName;
         if (pluginManager.getLoadedPlugin(mPackageInfo.packageName) != null) {
             throw new RuntimeException("plugin has already been loaded : " + mPackageInfo.packageName);
@@ -239,10 +227,11 @@ public final class LoadedPlugin {
         this.mPackageInfo.versionCode = this.mPackage.mVersionCode;
         this.mPackageInfo.versionName = this.mPackage.mVersionName;
         this.mPackageInfo.permissions = new PermissionInfo[0];
-        this.mPackageManager = new PluginPackageManager();
-        this.mPluginContext = new PluginContext(this);
-        this.mNativeLibDir = context.getDir(Constants.NATIVE_DIR, Context.MODE_PRIVATE);
-        this.mResources = createResources(context, apk);
+        this.mPackageManager = createPluginPackageManager();
+        this.mPluginContext = createPluginContext(null);
+        this.mNativeLibDir = getDir(context, Constants.NATIVE_DIR);
+        this.mPackage.applicationInfo.nativeLibraryDir = this.mNativeLibDir.getAbsolutePath();
+        this.mResources = createResources(context, getPackageName(), apk);
         this.mClassLoader = createClassLoader(context, apk, this.mNativeLibDir, context.getClassLoader());
 
         tryToCopyNativeLib(apk);
@@ -258,6 +247,7 @@ public final class LoadedPlugin {
         // Cache activities
         Map<ComponentName, ActivityInfo> activityInfos = new HashMap<ComponentName, ActivityInfo>();
         for (PackageParser.Activity activity : this.mPackage.activities) {
+            activity.info.metaData = activity.metaData;
             activityInfos.put(activity.getComponentName(), activity.info);
         }
         this.mActivityInfos = Collections.unmodifiableMap(activityInfos);
@@ -294,9 +284,12 @@ public final class LoadedPlugin {
         }
         this.mReceiverInfos = Collections.unmodifiableMap(receivers);
         this.mPackageInfo.receivers = receivers.values().toArray(new ActivityInfo[receivers.size()]);
+
+        // try to invoke plugin's application
+        invokeApplication();
     }
 
-    private void tryToCopyNativeLib(File apk) throws Exception {
+    protected void tryToCopyNativeLib(File apk) throws Exception {
         PluginUtil.copyNativeLib(apk, mHostContext, mPackageInfo, mNativeLibDir);
     }
 
@@ -344,18 +337,26 @@ public final class LoadedPlugin {
         return mApplication;
     }
 
-    public void invokeApplication() {
-        if (mApplication != null) {
-            return;
-        }
-
+    public void invokeApplication() throws Exception {
+        final Exception[] temp = new Exception[1];
         // make sure application's callback is run on ui thread.
         RunUtil.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                mApplication = makeApplication(false, mPluginManager.getInstrumentation());
+                if (mApplication != null) {
+                    return;
+                }
+                try {
+                    mApplication = makeApplication(false, mPluginManager.getInstrumentation());
+                } catch (Exception e) {
+                    temp[0] = e;
+                }
             }
         }, true);
+
+        if (temp[0] != null) {
+            throw temp[0];
+        }
     }
 
     public String getPackageResourcePath() {
@@ -432,14 +433,10 @@ public final class LoadedPlugin {
     }
 
     public void setTheme(int resid) {
-        try {
-            ReflectUtil.setField(Resources.class, this.mResources, "mThemeResId", resid);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        Reflector.QuietReflector.with(this.mResources).field("mThemeResId").set(resid);
     }
 
-    private Application makeApplication(boolean forceDefaultAppClass, Instrumentation instrumentation) {
+    protected Application makeApplication(boolean forceDefaultAppClass, Instrumentation instrumentation) throws Exception {
         if (null != this.mApplication) {
             return this.mApplication;
         }
@@ -449,14 +446,11 @@ public final class LoadedPlugin {
             appClass = "android.app.Application";
         }
 
-        try {
-            this.mApplication = instrumentation.newApplication(this.mClassLoader, appClass, this.getPluginContext());
-            instrumentation.callApplicationOnCreate(this.mApplication);
-            return this.mApplication;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
-        }
+        this.mApplication = instrumentation.newApplication(this.mClassLoader, appClass, this.getPluginContext());
+        // inject activityLifecycleCallbacks of the host application
+        mApplication.registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacksProxy());
+        instrumentation.callApplicationOnCreate(this.mApplication);
+        return this.mApplication;
     }
 
     public ResolveInfo resolveActivity(Intent intent, int flags) {
@@ -561,7 +555,7 @@ public final class LoadedPlugin {
         return this.mProviders.get(name);
     }
 
-    private boolean match(PackageParser.Component component, ComponentName target) {
+    protected boolean match(PackageParser.Component component, ComponentName target) {
         ComponentName source = component.getComponentName();
         if (source == target) return true;
         if (source != null && target != null
@@ -576,9 +570,9 @@ public final class LoadedPlugin {
     /**
      * @author johnsonlee
      */
-    private class PluginPackageManager extends PackageManager {
+    protected class PluginPackageManager extends PackageManager {
 
-        private PackageManager mHostPackageManager = mHostContext.getPackageManager();
+        protected PackageManager mHostPackageManager = mHostContext.getPackageManager();
 
         @Override
         public PackageInfo getPackageInfo(String packageName, int flags) throws NameNotFoundException {
@@ -610,7 +604,7 @@ public final class LoadedPlugin {
         }
 
         @Override
-        public Intent getLaunchIntentForPackage(String packageName) {
+        public Intent getLaunchIntentForPackage(@NonNull String packageName) {
             LoadedPlugin plugin = mPluginManager.getLoadedPlugin(packageName);
             if (null != plugin) {
                 return plugin.getLaunchIntent();
@@ -618,9 +612,9 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.getLaunchIntentForPackage(packageName);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
-        public Intent getLeanbackLaunchIntentForPackage(String packageName) {
+        @Override
+        public Intent getLeanbackLaunchIntentForPackage(@NonNull String packageName) {
             LoadedPlugin plugin = mPluginManager.getLoadedPlugin(packageName);
             if (null != plugin) {
                 return plugin.getLeanbackLaunchIntent();
@@ -629,8 +623,20 @@ public final class LoadedPlugin {
         }
 
         @Override
-        public int[] getPackageGids(String packageName) throws NameNotFoundException {
+        public int[] getPackageGids(@NonNull String packageName) throws NameNotFoundException {
             return this.mHostPackageManager.getPackageGids(packageName);
+        }
+
+        @TargetApi(Build.VERSION_CODES.N)
+        @Override
+        public int[] getPackageGids(String packageName, int flags) throws NameNotFoundException {
+            return this.mHostPackageManager.getPackageGids(packageName, flags);
+        }
+
+        @TargetApi(Build.VERSION_CODES.N)
+        @Override
+        public int getPackageUid(String packageName, int flags) throws NameNotFoundException {
+            return this.mHostPackageManager.getPackageUid(packageName, flags);
         }
 
         @Override
@@ -703,8 +709,8 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.getInstalledPackages(flags);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR2)
+        @Override
         public List<PackageInfo> getPackagesHoldingPermissions(String[] permissions, int flags) {
             return this.mHostPackageManager.getPackagesHoldingPermissions(permissions, flags);
         }
@@ -712,6 +718,12 @@ public final class LoadedPlugin {
         @Override
         public int checkPermission(String permName, String pkgName) {
             return this.mHostPackageManager.checkPermission(permName, pkgName);
+        }
+
+        @TargetApi(Build.VERSION_CODES.M)
+        @Override
+        public boolean isPermissionRevokedByPolicy(@NonNull String permName, @NonNull String pkgName) {
+            return this.mHostPackageManager.isPermissionRevokedByPolicy(permName, pkgName);
         }
 
         @Override
@@ -762,8 +774,8 @@ public final class LoadedPlugin {
 
         @TargetApi(Build.VERSION_CODES.O)
         @Override
-        public boolean isInstantApp(String s) {
-            return this.mHostPackageManager.isInstantApp(s);
+        public boolean isInstantApp(String packageName) {
+            return this.mHostPackageManager.isInstantApp(packageName);
         }
 
         @TargetApi(Build.VERSION_CODES.O)
@@ -787,8 +799,8 @@ public final class LoadedPlugin {
 
         @TargetApi(Build.VERSION_CODES.O)
         @Override
-        public void updateInstantAppCookie(@Nullable byte[] bytes) {
-            this.mHostPackageManager.updateInstantAppCookie(bytes);
+        public void updateInstantAppCookie(@Nullable byte[] cookie) {
+            this.mHostPackageManager.updateInstantAppCookie(cookie);
         }
 
         @Override
@@ -799,15 +811,15 @@ public final class LoadedPlugin {
         @TargetApi(Build.VERSION_CODES.O)
         @NonNull
         @Override
-        public List<SharedLibraryInfo> getSharedLibraries(int i) {
-            return this.mHostPackageManager.getSharedLibraries(i);
+        public List<SharedLibraryInfo> getSharedLibraries(int flags) {
+            return this.mHostPackageManager.getSharedLibraries(flags);
         }
 
         @TargetApi(Build.VERSION_CODES.O)
         @Nullable
         @Override
-        public ChangedPackages getChangedPackages(int i) {
-            return this.mHostPackageManager.getChangedPackages(i);
+        public ChangedPackages getChangedPackages(int sequenceNumber) {
+            return this.mHostPackageManager.getChangedPackages(sequenceNumber);
         }
 
         @Override
@@ -818,6 +830,12 @@ public final class LoadedPlugin {
         @Override
         public boolean hasSystemFeature(String name) {
             return this.mHostPackageManager.hasSystemFeature(name);
+        }
+
+        @TargetApi(Build.VERSION_CODES.N)
+        @Override
+        public boolean hasSystemFeature(String name, int version) {
+            return this.mHostPackageManager.hasSystemFeature(name, version);
         }
 
         @Override
@@ -894,7 +912,7 @@ public final class LoadedPlugin {
                 }
             }
 
-            List<ResolveInfo> all = new ArrayList<ResolveInfo>();
+            List<ResolveInfo> all = new ArrayList<>();
 
             List<ResolveInfo> pluginResolveInfos = mPluginManager.queryBroadcastReceivers(intent, flags);
             if (null != pluginResolveInfos && pluginResolveInfos.size() > 0) {
@@ -1023,8 +1041,8 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.getActivityIcon(intent);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.KITKAT_WATCH)
+        @Override
         public Drawable getActivityBanner(ComponentName component) throws NameNotFoundException {
             LoadedPlugin plugin = mPluginManager.getLoadedPlugin(component);
             if (null != plugin) {
@@ -1034,8 +1052,8 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.getActivityBanner(component);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.KITKAT_WATCH)
+        @Override
         public Drawable getActivityBanner(Intent intent) throws NameNotFoundException {
             ResolveInfo ri = mPluginManager.resolveActivity(intent);
             if (null != ri) {
@@ -1071,8 +1089,8 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.getApplicationIcon(packageName);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.KITKAT_WATCH)
+        @Override
         public Drawable getApplicationBanner(ApplicationInfo info) {
             LoadedPlugin plugin = mPluginManager.getLoadedPlugin(info.packageName);
             if (null != plugin) {
@@ -1082,8 +1100,8 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.getApplicationBanner(info);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.KITKAT_WATCH)
+        @Override
         public Drawable getApplicationBanner(String packageName) throws NameNotFoundException {
             LoadedPlugin plugin = mPluginManager.getLoadedPlugin(packageName);
             if (null != plugin) {
@@ -1134,8 +1152,8 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.getApplicationLogo(packageName);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+        @Override
         public Drawable getUserBadgedIcon(Drawable icon, UserHandle user) {
             return this.mHostPackageManager.getUserBadgedIcon(icon, user);
         }
@@ -1143,21 +1161,22 @@ public final class LoadedPlugin {
         @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
         public Drawable getUserBadgeForDensity(UserHandle user, int density) {
             try {
-                Method method = PackageManager.class.getMethod("getUserBadgeForDensity", UserHandle.class, int.class);
-                return (Drawable) method.invoke(this.mHostPackageManager, user, density);
+                return Reflector.with(this.mHostPackageManager)
+                        .method("getUserBadgeForDensity", UserHandle.class, int.class)
+                        .call(user, density);
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+        @Override
         public Drawable getUserBadgedDrawableForDensity(Drawable drawable, UserHandle user, Rect badgeLocation, int badgeDensity) {
             return this.mHostPackageManager.getUserBadgedDrawableForDensity(drawable, user, badgeLocation, badgeDensity);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+        @Override
         public CharSequence getUserBadgedLabel(CharSequence label, UserHandle user) {
             return this.mHostPackageManager.getUserBadgedLabel(label, user);
         }
@@ -1231,8 +1250,8 @@ public final class LoadedPlugin {
             this.mHostPackageManager.verifyPendingInstall(id, verificationCode);
         }
 
-        @Override
         @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
+        @Override
         public void extendVerificationTimeout(int id, int verificationCodeAtTimeout, long millisecondsToDelay) {
             this.mHostPackageManager.extendVerificationTimeout(id, verificationCodeAtTimeout, millisecondsToDelay);
         }
@@ -1283,7 +1302,7 @@ public final class LoadedPlugin {
         }
 
         @Override
-        public int getPreferredActivities(List<IntentFilter> outFilters, List<ComponentName> outActivities, String packageName) {
+        public int getPreferredActivities(@NonNull List<IntentFilter> outFilters, @NonNull List<ComponentName> outActivities, String packageName) {
             return this.mHostPackageManager.getPreferredActivities(outFilters, outActivities, packageName);
         }
 
@@ -1314,13 +1333,14 @@ public final class LoadedPlugin {
 
         @TargetApi(Build.VERSION_CODES.O)
         @Override
-        public void setApplicationCategoryHint(@NonNull String s, int i) {
-            this.mHostPackageManager.setApplicationCategoryHint(s, i);
+        public void setApplicationCategoryHint(@NonNull String packageName, int categoryHint) {
+            this.mHostPackageManager.setApplicationCategoryHint(packageName, categoryHint);
         }
 
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
         @Override
-        public PackageInstaller getPackageInstaller() {
+        public @NonNull
+        PackageInstaller getPackageInstaller() {
             return this.mHostPackageManager.getPackageInstaller();
         }
 
@@ -1330,29 +1350,11 @@ public final class LoadedPlugin {
             return this.mHostPackageManager.canRequestPackageInstalls();
         }
 
-        @TargetApi(24)
-        public int[] getPackageGids(String s, int i) throws NameNotFoundException {
-            return mHostPackageManager.getPackageGids(s);
-        }
-
-        public int getPackageUid(String s, int i) throws NameNotFoundException {
-            Object uid = ReflectUtil.invokeNoException(PackageManager.class, mHostPackageManager, "getPackageUid",
-                    new Class[]{String.class, int.class}, s, i);
-            if (uid != null) {
-                return (int) uid;
-            } else {
-                throw new NameNotFoundException(s);
+        public Drawable loadItemIcon(PackageItemInfo itemInfo, ApplicationInfo appInfo) {
+            if (itemInfo == null) {
+                return null;
             }
-        }
-
-        @TargetApi(23)
-        public boolean isPermissionRevokedByPolicy(String s, String s1) {
-            return false;
-        }
-
-        @TargetApi(24)
-        public boolean hasSystemFeature(String s, int i) {
-            return mHostPackageManager.hasSystemFeature(s);
+            return itemInfo.loadIcon(this.mHostPackageManager);
         }
     }
 
